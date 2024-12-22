@@ -1,0 +1,35 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "codegrep"
+version = "0.1.0"
+description = "Semantic code search tool using FAISS"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "numpy",
+    "faiss-cpu",
+    "openai",
+    "python-dotenv",
+    "langchain",
+    "langchain-text-splitters",
+    "pathspec"
+]
+
+[project.scripts]
+codegrep = "codegrep.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["codegrep"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+addopts = "-v --tb=short"
+
+[project.optional-dependencies]
+test = [
+    "pytest"
+]
