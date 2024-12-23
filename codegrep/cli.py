@@ -8,13 +8,9 @@ import fnmatch
 
 from codegrep.index import FAISSIndex
 from codegrep.config import IGNORE_PATHS, IGNORE_EXTENSIONS
+from codegrep.logging import get_logger
 
-# Configure logging
-logging.basicConfig(format="%(levelname)s: %(message)s", level=logging.INFO)
-logger = logging.getLogger(__name__)
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("openai").setLevel(logging.WARNING)
-logging.getLogger("langchain_core.callbacks.manager").setLevel(logging.WARNING)
+logger = get_logger()
 
 
 def should_ignore_file(

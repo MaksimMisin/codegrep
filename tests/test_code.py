@@ -10,6 +10,8 @@ from codegrep.cli import (
     should_ignore_file,
     update_index,
 )
+import io
+import logging
 
 # Test data
 SAMPLE_CODE = """
@@ -54,6 +56,29 @@ def temp_index_dir(tmp_path):
     # Initialize git repository
     init_git_repo(index_dir)
     return index_dir
+
+
+@pytest.fixture
+def capture_logs():
+    """Fixture to capture logs from the codegrep logger."""
+    log_capture = io.StringIO()
+    logger = logging.getLogger("codegrep")
+
+    # Save original handlers and level
+    original_handlers = logger.handlers[:]
+    original_level = logger.level
+
+    # Clear existing handlers and add string capture handler
+    logger.handlers = []
+    handler = logging.StreamHandler(log_capture)
+    handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
+    logger.addHandler(handler)
+
+    yield log_capture
+
+    # Restore original handlers and level
+    logger.handlers = original_handlers
+    logger.setLevel(original_level)
 
 
 class TestFAISSIndex:
@@ -254,9 +279,8 @@ def multiply(a, b):
         assert len(result_paths) > 0  # At least one result should be found
         assert all("vendor" not in path for path in result_paths)
 
-    def test_selective_reindex(self, temp_index_dir, capsys):
+    def test_selective_reindex(self, temp_index_dir, capture_logs):
         """Test that only modified files are re-indexed during updates."""
-
         # Create test files
         (temp_index_dir / "src").mkdir()
         test_files = {
@@ -288,10 +312,13 @@ def multiply(a, b):
         index = FAISSIndex(temp_index_dir)
         update_index(temp_index_dir, index)
 
-        # Capture initial indexing output
-        initial_output = capsys.readouterr()
-        assert "Updated: src/file1.py" in initial_output.out
-        assert "Updated: src/file2.py" in initial_output.out
+        # Check initial indexing log
+        initial_logs = capture_logs.getvalue()
+        assert "Updated 2 out of 2 files" in initial_logs
+
+        # Clear logs for next operation
+        capture_logs.truncate(0)
+        capture_logs.seek(0)
 
         # Perform initial search
         initial_results = index.search("calculate numbers", k=2)
@@ -309,12 +336,9 @@ def multiply(a, b):
         # Update index again
         update_index(temp_index_dir, index)
 
-        # Capture re-indexing output
-        reindex_output = capsys.readouterr()
-
-        # Verify only file2.py was re-indexed
-        assert "Updated: src/file2.py" in reindex_output.out
-        assert "Updated: src/file1.py" not in reindex_output.out
+        # Check reindexing logs
+        reindex_logs = capture_logs.getvalue()
+        assert "Updated 1 out of 2 files" in reindex_logs
 
         # Perform search again
         new_results = index.search("calculate numbers", k=2)
@@ -331,15 +355,8 @@ def multiply(a, b):
         assert len(file2_paths) > 0
         assert initial_relevance["src/file2.py"] != new_relevance["src/file2.py"]
 
-    def test_cli_incremental_indexing(self, temp_index_dir, capsys):
-        """Test that running codegrep twice only indexes files on the first run.
-
-        This test verifies that:
-        1. First run indexes all files
-        2. Second run detects no changes and skips indexing
-        3. Index content remains consistent between runs
-        4. Search results are identical between runs
-        """
+    def test_cli_incremental_indexing(self, temp_index_dir, capture_logs, capsys):
+        """Test that running codegrep twice only indexes files on the first run."""
         # Create test files with some searchable content
         (temp_index_dir / "src").mkdir()
         test_files = {
@@ -373,8 +390,6 @@ def multiply(a, b):
             (temp_index_dir / "src" / filename).write_text(content)
 
         # Add to git
-        import subprocess
-
         subprocess.run(
             ["git", "add", "."], cwd=str(temp_index_dir), capture_output=True
         )
@@ -395,18 +410,21 @@ def multiply(a, b):
         ):
             main()
 
-        # Capture first run output
-        first_run = capsys.readouterr()
+        # Get first run logs and results
+        first_run_logs = capture_logs.getvalue()
+        first_run_stdout = capsys.readouterr().out
+        assert "Updated 3 out of 3 files" in first_run_logs
 
-        # Verify first run indexed all files
-        assert "Updated 3 out of 3 files." in first_run.out
-
-        # Store first run search results
+        # Extract search results from logs
         first_run_results = [
             line
-            for line in first_run.out.split("\n")
+            for line in first_run_stdout.split("\n")
             if line.startswith("src/") and ".py" in line
         ]
+
+        # Clear logs for second run
+        capture_logs.truncate(0)
+        capture_logs.seek(0)
 
         # Second run - should detect no changes
         with patch.object(
@@ -414,24 +432,26 @@ def multiply(a, b):
         ):
             main()
 
-        # Capture second run output
-        second_run = capsys.readouterr()
+        # Get second run logs and results
+        second_run_logs = capture_logs.getvalue()
+        second_run_stdout = capsys.readouterr().out
+        assert "Updated 0 out of 3 files" in second_run_logs
 
-        # Verify second run didn't reindex anything
-        assert "Updated 0 out of 3 files." in second_run.out
-
-        # Store second run search results
+        # Extract search results from second run
         second_run_results = [
             line
-            for line in second_run.out.split("\n")
+            for line in second_run_stdout.split("\n")
             if line.startswith("src/") and ".py" in line
         ]
 
         # Verify search results are identical between runs
         assert first_run_results == second_run_results
-
-        # Verify both runs found relevant results
         assert any("search.py" in line for line in first_run_results)
+        assert len(first_run_results) == 3
+
+        # Clear logs for files-only test
+        capture_logs.truncate(0)
+        capture_logs.seek(0)
 
         # Test with --files-only flag
         with patch.object(
@@ -441,14 +461,18 @@ def multiply(a, b):
         ):
             main()
 
-        files_only_run = capsys.readouterr()
+        # Get files-only run output
+        files_only_logs = capture_logs.getvalue()
+        files_only_stdout = capsys.readouterr().out
+        files_only_results = [
+            line
+            for line in files_only_stdout.split("\n")
+            if line.startswith("src/") and line.strip()
+        ]
 
         # Verify files-only output format
-        files_only_results = files_only_run.out.strip().split("\n")
         assert all(line.endswith(".py") for line in files_only_results)
         assert not any(
             "(" in line for line in files_only_results
         )  # No relevance scores
-
-        # Verify no indexing occurred in files-only run
-        assert "Updated:" not in files_only_run.out
+        assert not any("Updated:" in line for line in files_only_logs.split("\n"))
