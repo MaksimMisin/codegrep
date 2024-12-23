@@ -154,20 +154,41 @@ class FAISSIndex:
             return False
 
     def search(self, query: str, k: int = 5) -> List[SearchResult]:
-        """Search the index with the given query embedding."""
+        """Search the index with the given query embedding.
 
-        results = self.index.similarity_search_with_score(query, k=k)
+        Returns top k unique files, using the highest relevance score when
+        multiple chunks from the same file match.
+        """
+        # Request more results initially to account for duplicates
+        results = self.index.similarity_search_with_score(query, k=10 * k)
 
-        # Convert to expected format
-        formatted_results = []
+        # Group results by filepath and keep highest relevance score
+        file_results = {}
         for doc, score in results:
-            formatted_results.append(
-                SearchResult(
-                    filepath=doc.metadata["filepath"],
-                    filename=doc.metadata["filename"],
-                    content=doc.page_content,
-                    relevance=1 / (1 + score),
-                )
-            )
+            filepath = doc.metadata["filepath"]
+            relevance = 1 / (1 + score)
 
-        return formatted_results
+            if (
+                filepath not in file_results
+                or relevance > file_results[filepath]["relevance"]
+            ):
+                file_results[filepath] = {
+                    "filename": doc.metadata["filename"],
+                    "content": doc.page_content,
+                    "relevance": relevance,
+                }
+
+        # Convert to list of SearchResults, sorted by relevance
+        formatted_results = [
+            SearchResult(
+                filepath=filepath,
+                filename=data["filename"],
+                content=data["content"],
+                relevance=data["relevance"],
+            )
+            for filepath, data in file_results.items()
+        ]
+
+        # Sort by relevance and limit to k results
+        formatted_results.sort(key=lambda x: x.relevance, reverse=True)
+        return formatted_results[:k]
