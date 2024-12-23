@@ -1,201 +1,173 @@
-from typing import Optional, Dict, List
-import faiss
-import numpy as np
+from dataclasses import dataclass
 from pathlib import Path
-import time
+import faiss
 import json
+import time
+from typing import Dict, List, Optional
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_core.documents import Document
+from langchain_core.embeddings import Embeddings
+from langchain_community.vectorstores import FAISS
+from langchain_community.docstore.in_memory import InMemoryDocstore
+from codegrep.embeddings import embedding_model
 from codegrep.config import EMBEDDING_DIM
-from codegrep.embeddings import process_text
+
+
+@dataclass
+class SearchResult:
+    filepath: str
+    filename: str
+    content: str
+    relevance: float
 
 
 class FAISSIndex:
-    def __init__(self, index_dir: Optional[Path] = None):
-        """Initialize FAISSIndex with a configurable index directory."""
+    SAVED_INDEX_NAME = "index"
 
-        self.metadata: Dict[int, Dict] = {}
+    def __init__(
+        self,
+        index_dir: Optional[Path] = None,
+        embedding_model: Embeddings = embedding_model,
+    ):
+        """Initialize FAISSIndex with a configurable index directory.
+
+        index_dir: Path
+            Absolute path to the directory where the index will be stored.
+        embedding_model: Embeddings
+            Langchain Embeddings object used to encode text.
+        """
         self.file_timestamps: Dict[str, float] = {}
+        self.filepath_to_ids: Dict[str, List[str]] = {}
 
         # Use provided directory or current working directory
-        self.index_path = index_dir if index_dir else Path.cwd()
-        self.index_path = self.index_path / ".codegrep"
-        self.index_file = self.index_path / "faiss.index"
-        self.metadata_file = self.index_path / "metadata.json"
+        self.index_dir = index_dir if index_dir else Path.cwd()
+        self.index_path = self.index_dir / ".codegrep"
         self.timestamps_file = self.index_path / "timestamps.json"
+        self.filepaths_file = self.index_path / "filepaths.json"
 
         # Create data directory if it doesn't exist
         self.index_path.mkdir(parents=True, exist_ok=True)
 
+        self.text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=2000,
+            chunk_overlap=200,
+            length_function=len,
+            separators=["\n\n", "\n", " ", ""],
+        )
+        self.embedding_model = embedding_model
+
         # Initialize or load existing index
-        if self.index_file.exists() and self.metadata_file.exists():
+        if (self.index_path / f"{self.SAVED_INDEX_NAME}.faiss").exists():
             self.load_index()
         else:
-            self.index = faiss.IndexFlatL2(EMBEDDING_DIM)
+            index = faiss.IndexFlatL2(EMBEDDING_DIM)
+            self.index = FAISS(
+                embedding_model,
+                index,
+                docstore=InMemoryDocstore(),
+                index_to_docstore_id={},
+            )
+            self._save_metadata()
 
-    def save_index(self):
-        """Save index, metadata, and timestamps to disk."""
-        faiss.write_index(self.index, str(self.index_file))
-
-        # Save metadata and timestamps as JSON
-        with open(self.metadata_file, "w") as f:
-            json.dump(self.metadata, f)
+    def _save_metadata(self):
+        """Save timestamps and filepath mappings."""
         with open(self.timestamps_file, "w") as f:
             json.dump(self.file_timestamps, f)
+        with open(self.filepaths_file, "w") as f:
+            json.dump(self.filepath_to_ids, f)
 
-    def load_index(self):
-        """Load index, metadata, and timestamps from disk."""
-        if not self.index_file.exists():
-            raise FileNotFoundError(f"Index file not found at {self.index_file}")
-
-        self.index = faiss.read_index(str(self.index_file))
-
-        if self.metadata_file.exists():
-            with open(self.metadata_file, "r") as f:
-                self.metadata = json.load(f)
-                # Convert string keys back to integers
-                self.metadata = {int(k): v for k, v in self.metadata.items()}
-
+    def _load_metadata(self):
+        """Load timestamps and filepath mappings."""
         if self.timestamps_file.exists():
             with open(self.timestamps_file, "r") as f:
                 self.file_timestamps = json.load(f)
-        else:
-            self.file_timestamps = {}
+        if self.filepaths_file.exists():
+            with open(self.filepaths_file, "r") as f:
+                self.filepath_to_ids = json.load(f)
+
+    def save_index(self):
+        """Save index and metadata to disk."""
+        self.index.save_local(str(self.index_path), self.SAVED_INDEX_NAME)
+        self._save_metadata()
+
+    def load_index(self):
+        """Load index and metadata from disk."""
+        self.index = FAISS.load_local(
+            str(self.index_path),
+            self.embedding_model,
+            index_name=self.SAVED_INDEX_NAME,
+            allow_dangerous_deserialization=True,
+        )
+        self._load_metadata()
+
+    def indexed_files(self, absolute_paths: bool = False) -> List[str]:
+        """Get a list of files that have been indexed."""
+        if absolute_paths:
+            return [str(self.index_dir / filepath) for filepath in self.filepath_to_ids]
+        return list(self.filepath_to_ids.keys())
 
     def file_needs_update(self, filepath: str) -> bool:
-        """Check if a file needs to be reindexed based on its modification time."""
+        """Check if a file needs to be reindexed based on its modification time.
+        Takes path relative to the index directory.
+        """
         try:
-            current_mtime = Path(filepath).stat().st_mtime
+            current_mtime = (self.index_dir / filepath).stat().st_mtime
             last_indexed_time = self.file_timestamps.get(filepath, 0)
             return current_mtime > last_indexed_time
         except Exception as e:
             print(f"Error checking file modification time for {filepath}: {e}")
-            return True  # If there's any error, assume file needs update
+            return True
 
     def remove_file_from_index(self, filepath: str) -> None:
-        """Remove a file's vectors and metadata from the index.
+        """Remove a file's vectors and metadata from the index."""
+        if filepath in self.filepath_to_ids:
+            ids_to_remove = self.filepath_to_ids[filepath]
+            self.index.delete(ids_to_remove)
+            del self.filepath_to_ids[filepath]
+            if filepath in self.file_timestamps:
+                del self.file_timestamps[filepath]
 
-        Args:
-            filepath: Full path to the file to remove from the index
-        """
-        if self.index.ntotal == 0:
-            return
+    def add_to_index(self, full_content: str, filepath: str) -> bool:
+        """Process and add file content to the index."""
+        try:
+            # Remove existing entries for this file
+            self.remove_file_from_index(filepath)
 
-        # Convert filepath to relative path to match metadata
-        relative_filepath = str(Path(filepath).relative_to(self.index_path.parent))
-
-        # Find indices of vectors to remove
-        indices_to_remove = []
-        new_metadata = {}
-        current_index = 0
-
-        # Identify vectors to remove and build new metadata
-        for idx, meta in sorted(self.metadata.items()):
-            if meta["filepath"] != relative_filepath:
-                # Keep this entry, but update its index
-                new_metadata[current_index] = meta
-                current_index += 1
-            else:
-                indices_to_remove.append(idx)
-
-        if not indices_to_remove:
-            return  # File not found in index
-
-        # Create a boolean mask for vectors to keep
-        total_vectors = self.index.ntotal
-        keep_mask = np.ones(total_vectors, dtype=bool)
-        keep_mask[indices_to_remove] = False
-
-        # Extract the vectors we want to keep
-        vectors = faiss.vector_to_array(self.index.get_xb()).reshape(-1, self.index.d)
-        kept_vectors = vectors[keep_mask]
-
-        # Clear the current index
-        self.index.reset()
-
-        # Add back the vectors we want to keep
-        if len(kept_vectors) > 0:
-            self.index.add(kept_vectors)
-
-        # Update metadata
-        self.metadata = new_metadata
-
-        # Remove from timestamps
-        if filepath in self.file_timestamps:
-            del self.file_timestamps[filepath]
-
-    def add_to_index(self, full_content: str, filename: str, filepath: str) -> bool:
-        """Process and add file content to the index.
-
-        Args:
-            full_content: Complete file content
-            filename: Name of the file
-            filepath: Path to the file (relative to repo root)
-
-        Returns:
-            bool: True if successful, False otherwise
-        """
-        # Process text to get chunks and embeddings
-        chunk_embeddings = process_text(full_content)
-        if not chunk_embeddings:
-            return False
-
-        # Extract embeddings array for FAISS
-        embeddings = np.vstack([ce.embedding for ce in chunk_embeddings])
-
-        if embeddings.shape[1] != self.index.d:
-            print(
-                f"Error: Embedding dimension {embeddings.shape[1]} does not match index dimension {self.index.d}"
+            # Create Document objects with metadata
+            raw_document = Document(
+                page_content=full_content,
+                metadata={"filepath": filepath, "filename": Path(filepath).name},
             )
+            documents = self.text_splitter.split_documents([raw_document])
+
+            # Add to index and get IDs
+            ids = self.index.add_documents(documents)
+
+            # Update mappings
+            self.filepath_to_ids[filepath] = ids
+            self.file_timestamps[filepath] = time.time()
+
+            return True
+
+        except Exception as e:
+            print(f"Error adding file to index: {e}")
             return False
 
-        # Add embeddings to FAISS index
-        self.index.add(embeddings)
-        start_idx = len(self.metadata)
+    def search(self, query: str, k: int = 5) -> List[SearchResult]:
+        """Search the index with the given query embedding."""
 
-        # Store metadata for each chunk
-        for i, ce in enumerate(chunk_embeddings):
-            self.metadata[start_idx + i] = {
-                "content": ce.content,
-                "chunk_index": i,
-                "total_chunks": len(chunk_embeddings),
-                "filename": filename,
-                "filepath": filepath,
-            }
+        results = self.index.similarity_search_with_score(query, k=k)
 
-        # Update timestamp
-        abs_path = str(Path(self.index_path).parent / filepath)
-        self.file_timestamps[abs_path] = time.time()
-        return True
-
-    def search(self, query_embedding: np.ndarray, k: int = 5) -> List[Dict]:
-        """Search the index with the given query embedding.
-
-        Args:
-            query_embedding: Embedding vector for the search query
-            k: Number of results to return
-
-        Returns:
-            List of dictionaries containing search results
-        """
-        if self.index.ntotal == 0:
-            return []
-
-        # Search the FAISS index
-        distances, indices = self.index.search(query_embedding, k)
-
-        # Convert distances to similarity scores and combine with metadata
-        results = []
-        for i, idx in enumerate(indices[0]):
-            if idx < len(self.metadata):
-                metadata = self.metadata[idx]
-                similarity = 1 / (1 + distances[0][i])
-
-                results.append(
-                    {
-                        "filepath": metadata["filepath"],
-                        "filename": metadata["filename"],
-                        "content": metadata["content"],
-                        "similarity": similarity,
-                    }
+        # Convert to expected format
+        formatted_results = []
+        for doc, score in results:
+            formatted_results.append(
+                SearchResult(
+                    filepath=doc.metadata["filepath"],
+                    filename=doc.metadata["filename"],
+                    content=doc.page_content,
+                    relevance=1 / (1 + score),
                 )
+            )
 
-        return results
+        return formatted_results

@@ -8,6 +8,7 @@ build/
 develop-eggs/
 dist/
 downloads/
+.pytest_cache/
 eggs/
 .eggs/
 lib/
@@ -38,3 +39,5 @@ ENV/
 metadata.npy
 
 .claude/
+notebooks/*
+!/notebooks/*.ipynb

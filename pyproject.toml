@@ -14,8 +14,7 @@ dependencies = [
     "openai",
     "python-dotenv",
     "langchain",
-    "langchain-text-splitters",
-    "pathspec"
+    "langchain-text-splitters"
 ]
 
 [project.scripts]
