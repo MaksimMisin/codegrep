@@ -476,3 +476,127 @@ def multiply(a, b):
             "(" in line for line in files_only_results
         )  # No relevance scores
         assert not any("Updated:" in line for line in files_only_logs.split("\n"))
+
+    def test_ignore_path_persistence(self, temp_index_dir, capture_logs, capsys):
+        """Test that ignored paths persist across multiple runs."""
+        # Create test directory structure with files
+        (temp_index_dir / "src/app").mkdir(parents=True)
+        (temp_index_dir / "src/vendor").mkdir(parents=True)
+
+        # Create test files with similar content but in different directories
+        app_content = """
+        def process_data(data):
+            '''Process input data and return results'''
+            return data.upper()
+        """
+        vendor_content = """
+        def process_data(data):
+            '''Vendor's data processing implementation'''
+            return data.strip()
+        """
+
+        (temp_index_dir / "src/app/processor.py").write_text(app_content)
+        (temp_index_dir / "src/vendor/processor.py").write_text(vendor_content)
+
+        # Add to git
+        subprocess.run(
+            ["git", "add", "."], cwd=str(temp_index_dir), capture_output=True
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "Add processor files"],
+            cwd=str(temp_index_dir),
+            capture_output=True,
+        )
+
+        # Import main CLI function
+        from codegrep.cli import main
+        import sys
+        from unittest.mock import patch
+
+        # First run - index everything without ignore flag
+        with patch.object(
+            sys, "argv", ["codegrep", "-q", "process data", "-p", str(temp_index_dir)]
+        ):
+            main()
+
+        # Get first run output
+        first_run_stdout = capsys.readouterr().out
+        first_run_results = [
+            line
+            for line in first_run_stdout.split("\n")
+            if line.startswith("src/") and "processor.py" in line
+        ]
+
+        # Verify both files are initially found
+        assert len(first_run_results) == 2
+        assert any("app/processor.py" in line for line in first_run_results)
+        assert any("vendor/processor.py" in line for line in first_run_results)
+
+        # Clear logs for second run
+        capture_logs.truncate(0)
+        capture_logs.seek(0)
+
+        # Second run - with ignore flag for vendor directory
+        with patch.object(
+            sys,
+            "argv",
+            [
+                "codegrep",
+                "-q",
+                "process data",
+                "-p",
+                str(temp_index_dir),
+                "--ignore-path",
+                "vendor/",
+            ],
+        ):
+            main()
+
+        # Get second run output
+        second_run_stdout = capsys.readouterr().out
+        second_run_results = [
+            line
+            for line in second_run_stdout.split("\n")
+            if line.startswith("src/") and "processor.py" in line
+        ]
+
+        # Verify vendor file is ignored
+        assert len(second_run_results) == 1
+        assert any("app/processor.py" in line for line in second_run_results)
+        assert not any("vendor/processor.py" in line for line in second_run_results)
+
+        # Clear logs for third run
+        capture_logs.truncate(0)
+        capture_logs.seek(0)
+
+        # Third run - with same ignore flag to verify persistence
+        with patch.object(
+            sys,
+            "argv",
+            [
+                "codegrep",
+                "-q",
+                "process data",
+                "-p",
+                str(temp_index_dir),
+                "--ignore-path",
+                "vendor",
+            ],
+        ):
+            main()
+
+        # Get third run output
+        third_run_stdout = capsys.readouterr().out
+        third_run_results = [
+            line
+            for line in third_run_stdout.split("\n")
+            if line.startswith("src/") and "processor.py" in line
+        ]
+
+        # Verify vendor file is still ignored
+        assert len(third_run_results) == 1
+        assert any("app/processor.py" in line for line in third_run_results)
+        assert not any("vendor/processor.py" in line for line in third_run_results)
+
+        # Verify the ignored file wasn't reindexed
+        assert "Updated 0 out of 1 files" in capture_logs.getvalue()

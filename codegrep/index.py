@@ -119,7 +119,8 @@ class FAISSIndex:
             return True
 
     def remove_file_from_index(self, filepath: str) -> None:
-        """Remove a file's vectors and metadata from the index."""
+        """Remove a file's vectors and metadata from the index.
+        Takes path relative to the index directory."""
         if filepath in self.filepath_to_ids:
             ids_to_remove = self.filepath_to_ids[filepath]
             self.index.delete(ids_to_remove)

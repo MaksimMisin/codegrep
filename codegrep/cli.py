@@ -165,8 +165,9 @@ def remove_deleted_files(
     removed_files = indexed_files - current_abs_paths
 
     for filepath in removed_files:
-        logger.info(f"Removing deleted file from index: {filepath}")
-        index.remove_file_from_index(filepath)
+        rel_path = str(Path(filepath).relative_to(index.index_dir))
+        logger.info(f"Removing deleted file from index: {rel_path}")
+        index.remove_file_from_index(rel_path)
 
 
 def process_single_file(

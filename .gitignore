@@ -41,3 +41,4 @@ metadata.npy
 .claude/
 notebooks/*
 !/notebooks/*.ipynb
+.codegrep
