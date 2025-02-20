@@ -1,3 +1,4 @@
+from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 import faiss
@@ -161,35 +162,40 @@ class FAISSIndex:
         multiple chunks from the same file match.
         """
         # Request more results initially to account for duplicates
-        results = self.index.similarity_search_with_score(query, k=10 * k)
+        initial_k = max(30, 30 * k)
+        results = self.index.similarity_search_with_score(query, k=initial_k)
 
-        # Group results by filepath and keep highest relevance score
-        file_results = {}
+        # Group results by filepath and collect all relevance scores and contents
+        file_results = defaultdict(
+            lambda: {"scores": [], "contents": [], "filename": ""}
+        )
         for doc, score in results:
             filepath = doc.metadata["filepath"]
             relevance = 1 / (1 + score)
 
-            if (
-                filepath not in file_results
-                or relevance > file_results[filepath]["relevance"]
-            ):
-                file_results[filepath] = {
-                    "filename": doc.metadata["filename"],
-                    "content": doc.page_content,
-                    "relevance": relevance,
-                }
+            file_results[filepath]["scores"].append(relevance)  # type: ignore
+            file_results[filepath]["contents"].append(doc.page_content)  # type: ignore
+            file_results[filepath]["filename"] = doc.metadata["filename"]
 
-        # Convert to list of SearchResults, sorted by relevance
-        formatted_results = [
-            SearchResult(
-                filepath=filepath,
-                filename=data["filename"],
-                content=data["content"],
-                relevance=data["relevance"],
+        # calculate average relevance score for each file
+        formatted_results = []
+        for filepath, data in file_results.items():
+            # Calculate average relevance score
+            avg_relevance = sum(data["scores"]) / len(data["scores"])  # type: ignore
+
+            # Select the content from the chunk with the highest relevance score
+            best_content_idx = data["scores"].index(max(data["scores"]))
+            best_content = data["contents"][best_content_idx]
+
+            formatted_results.append(
+                SearchResult(
+                    filepath=filepath,
+                    filename=data["filename"],  # type: ignore
+                    content=best_content,
+                    relevance=avg_relevance,
+                )
             )
-            for filepath, data in file_results.items()
-        ]
 
-        # Sort by relevance and limit to k results
+        # Sort by average relevance and limit to k results
         formatted_results.sort(key=lambda x: x.relevance, reverse=True)
         return formatted_results[:k]

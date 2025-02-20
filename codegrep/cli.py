@@ -120,7 +120,7 @@ def collect_repository_files(
             file_path = repo_path / rel_path
             if file_path.is_file():  # Verify file exists
                 # Check if file should be ignored
-                if should_ignore_file(str(file_path), custom_ignore_paths):
+                if should_ignore_file(str(rel_path), custom_ignore_paths):
                     files_ignored += 1
                     if dry_run:
                         logger.debug(f"Ignoring: {rel_path}")

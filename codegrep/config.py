@@ -16,6 +16,16 @@ IGNORE_PATHS = [
     "*.mypy_cache/*",
     "*.pytest_cache/*",
     "*.codegrep/*",
+    "node_modules/*",
+    "dist/*",
+    "build/*",
+    "target/*",
+    "*.egg-info/*",
+    "*.ipynb_checkpoints/*",
+    ".claude/*",
+    ".yarn/*",
+    ".vscode/*",
+    ".vim/*",
 ]
 
 # File extensions that should be ignored (non-textual or irrelevant for code search)
