@@ -16,6 +16,17 @@ Before using codegrep, you need to set up your OpenAI API key. Create a `.env` f
 ```env
 OPENAI_API_KEY=your_api_key_here
 OPENAI_EMBEDDING_MODEL=your_embedding_model_here
+GEMINI_API_KEY=your_gemini_api_key_here // only if you want to use LLM-based search
+```
+
+## LLM-based Search
+
+For improved code search quality, codegrep can use Repomix to package your code in an AI-friendly format.
+
+### Prerequisites
+Install Repomix using npm:
+```bash
+npm install -g repomix
 ```
 
 ## Usage

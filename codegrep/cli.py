@@ -9,6 +9,7 @@ import fnmatch
 from codegrep.index import FAISSIndex
 from codegrep.config import IGNORE_PATHS, IGNORE_EXTENSIONS
 from codegrep.logging import get_logger
+from codegrep.llm_search import search_with_llm
 
 logger = get_logger()
 
@@ -303,6 +304,17 @@ def main() -> None:
         action="append",
         help="Ignore files/directories containing this path (can be specified multiple times)",
     )
+    search_group.add_argument(
+        "--use-llm",
+        action="store_true",
+        help="Use LLM instead of embeddings for search (requires GEMINI_API_KEY or OPENAI_API_KEY)",
+    )
+
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Save debug information in project root",
+    )
     parser.add_argument(
         "-v", "--verbose", action="store_true", help="Enable verbose output"
     )
@@ -327,9 +339,49 @@ def main() -> None:
         logger.error(f"Error: {args.path} is not a git repository")
         sys.exit(1)
 
-    # Use index_dir if provided, otherwise use repository path
-    index_dir = args.index_dir if args.index_dir else args.path
-    faiss_index = FAISSIndex(index_dir)
+    current_files = None
+    if args.use_llm:
+        current_files = collect_repository_files(
+            args.path,
+            custom_ignore_paths=args.ignore_path,
+            dry_run=False,
+        )
+    else:
+        # Use index_dir if provided, otherwise use repository path
+        index_dir = args.index_dir if args.index_dir else args.path
+        faiss_index = FAISSIndex(index_dir)
+
+        # Update the index only for embedding-based search
+        update_index(
+            args.path,
+            faiss_index,
+            custom_ignore_paths=args.ignore_path,
+            dry_run=args.dry_run,
+            quiet=args.files_only,
+        )
+    if args.use_llm:
+        if not current_files:
+            logger.error("No files found for LLM search")
+            return
+
+        # Perform LLM-based search
+        file_results = search_with_llm(
+            args.path,
+            args.query,
+            current_files,
+            ignore_paths=args.ignore_path,
+            debug=args.debug,
+        )
+
+        if args.files_only:
+            # Only print filenames, no other output
+            for filepath in file_results[: args.hits]:
+                print(filepath)
+        else:
+            logger.info(f"\nLLM search results for '{args.query}':")
+            for filepath in file_results[: args.hits]:
+                print(f"{filepath}")
+        return
 
     if args.dry_run:
         # Only run the index update in dry-run mode

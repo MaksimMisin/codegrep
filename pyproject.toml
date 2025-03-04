@@ -14,7 +14,9 @@ dependencies = [
     "openai",
     "python-dotenv",
     "langchain",
-    "langchain-text-splitters"
+    "langchain-text-splitters",
+    "json_repair",
+    "requests"
 ]
 
 [project.scripts]
