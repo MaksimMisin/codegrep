@@ -2,7 +2,7 @@ import subprocess
 import requests
 import tempfile
 import os
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, cast
 from pathlib import Path
 from json_repair import loads as repair_json
 from openai import OpenAI
@@ -26,6 +26,21 @@ def _save_debug_file(repo_path: Path, filename: str, content: str) -> None:
         logger.info(f"Debug file saved: {debug_path}")
     except Exception as e:
         logger.error(f"Failed to save debug file {debug_path}: {e}")
+
+
+def create_llm_prompt(repo_files_content: str, query: str, n_files: int) -> str:
+    return f"""{repo_files_content}
+
+List all files that users needs to read to resolve: "{query}".
+
+List in order of importance, starting from the MOST important file.
+Do not foget important dependencies.
+Your output should be a json object with the following structure:
+{{
+  "reasoning": "think through the users's request and how each file might be related to it",
+  "files": ["MOST-CRITICAL-file-path1", "2nd-most-critical-file-path2", ...] //list of all file paths
+}}
+Make sure to include at least {n_files} files."""
 
 
 def convert_ignore_path_to_glob(ignore_path: str) -> str:
@@ -127,6 +142,7 @@ def collect_files_content_manual(files: List[Tuple[str, str]]) -> str:
 def search_with_gemini(
     repo_files_content: str,
     query: str,
+    n_files: int,
     repo_path: Optional[Path] = None,
     debug: bool = False,
 ) -> Optional[List[str]]:
@@ -137,14 +153,7 @@ def search_with_gemini(
 
     api_url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
 
-    prompt = f"""{repo_files_content}
-
-List all files related to "{query}". Focus on dependencies. Your output should be a json object with the following structure:
-{{
-  "reasoning": "think through the query and how each file might be related to it",
-  "files": ["file-path1", "file-path2", ...] //list of all file paths
-}}
-Make sure to include at least 12 relevant files."""
+    prompt = create_llm_prompt(repo_files_content, query, n_files)
 
     payload = {
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
@@ -175,7 +184,7 @@ Make sure to include at least 12 relevant files."""
                 _save_debug_file(repo_path, "codegrep-gemini-response.json", text)
 
             try:
-                result = repair_json(text)
+                result = cast(dict, repair_json(text))
                 return result.get("files", [])
             except Exception as e:
                 logger.error(f"Error parsing Gemini response as JSON: {e}")
@@ -195,6 +204,7 @@ Make sure to include at least 12 relevant files."""
 def search_with_openai(
     repo_files_content: str,
     query: str,
+    n_files: int,
     repo_path: Optional[Path] = None,
     debug: bool = False,
 ) -> Optional[List[str]]:
@@ -204,14 +214,7 @@ def search_with_openai(
         return None
     client = OpenAI(api_key=OPENAI_API_KEY)
 
-    prompt = f"""```
-{repo_files_content}
-```
-list all files related to "{query}". focus on dependencies. your output should be a json object with the following structure:
-{{
-"reasoning": "think through the query and how each file might be related to it",
-"files": ["file-path1", "file-path2", ...] //list of all file paths
-}}"""
+    prompt = create_llm_prompt(repo_files_content, query, n_files)
     try:
         response = client.chat.completions.create(
             model=GPT4O_MINI_MODEL,
@@ -233,7 +236,7 @@ list all files related to "{query}". focus on dependencies. your output should b
             )
 
         try:
-            result = repair_json(text)
+            result = cast(dict, repair_json(text))
             return result.get("files", [])
         except Exception as e:
             logger.error(f"Error parsing OpenAI response as JSON: {e}")
@@ -247,6 +250,7 @@ list all files related to "{query}". focus on dependencies. your output should b
 def search_with_llm(
     repo_path: Path,
     query: str,
+    n_files: int,
     files: List[Tuple[str, str]],
     ignore_paths: Optional[List[str]] = None,
     debug: bool = False,
@@ -256,12 +260,12 @@ def search_with_llm(
     repo_content = collect_repo_files_content(repo_path, files, ignore_paths, debug)
 
     # Try Gemini first
-    results = search_with_gemini(repo_content, query, repo_path, debug)
+    results = search_with_gemini(repo_content, query, n_files, repo_path, debug)
 
     # Fall back to OpenAI if Gemini fails
     if results is None:
         logger.info("Falling back to OpenAI for LLM search")
-        results = search_with_openai(repo_content, query, repo_path, debug)
+        results = search_with_openai(repo_content, query, n_files, repo_path, debug)
 
     # If both APIs fail, return an empty list
     if results is None:

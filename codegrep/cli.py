@@ -368,6 +368,7 @@ def main() -> None:
         file_results = search_with_llm(
             args.path,
             args.query,
+            args.hits,
             current_files,
             ignore_paths=args.ignore_path,
             debug=args.debug,
