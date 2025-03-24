@@ -49,6 +49,10 @@ def convert_ignore_path_to_glob(ignore_path: str) -> str:
     if "*" in ignore_path or "?" in ignore_path:
         return ignore_path
 
+    # If it ends with a slash, treat it as a directory
+    if ignore_path.endswith("/"):
+        return f"**/{ignore_path}**"
+
     # If it starts with a dot, treat it as an extension
     if ignore_path.startswith("."):
         return f"**/*{ignore_path}"
@@ -69,7 +73,8 @@ def collect_repo_files_content(
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_output_path = os.path.join(temp_dir, "repomix-output.txt")
 
-            cmd = ["repomix", "--compress", f"--output={temp_output_path}"]
+            # cmd = ["repomix", "--compress", f"--output={temp_output_path}"]
+            cmd = ["repomix", "--compress"]  # , f"--output={temp_output_path}"]
 
             # Add ignore patterns if provided
             if ignore_paths:

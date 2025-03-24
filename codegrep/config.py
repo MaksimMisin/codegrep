@@ -29,6 +29,7 @@ IGNORE_PATHS = [
     "*.egg-info/*",
     "*.ipynb_checkpoints/*",
     ".claude/*",
+    ".conda/*",
     ".yarn/*",
     ".vscode/*",
     ".vim/*",
