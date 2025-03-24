@@ -73,8 +73,7 @@ def collect_repo_files_content(
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_output_path = os.path.join(temp_dir, "repomix-output.txt")
 
-            # cmd = ["repomix", "--compress", f"--output={temp_output_path}"]
-            cmd = ["repomix", "--compress"]  # , f"--output={temp_output_path}"]
+            cmd = ["repomix", "--compress", f"--output={temp_output_path}"]
 
             # Add ignore patterns if provided
             if ignore_paths:
