@@ -1,6 +1,6 @@
 # codegrep
 
-A semantic code search on top of OpenAI embeddings to find relevant code in a Git repository.
+LLM-powered code search tool, returns a list of relevant files in a Git repository.
 
 ## Installation
 
