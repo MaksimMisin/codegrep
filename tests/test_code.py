@@ -225,7 +225,7 @@ def multiply(a, b):
 
         # Check that all results have required fields
         for result in results:
-            assert isinstance(result.relevance, np.float32().dtype.type)
+            assert isinstance(result.relevance, (float, np.floating))
             assert isinstance(result.filepath, str)
             assert result.filepath.endswith(".py")
 

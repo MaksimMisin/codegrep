@@ -66,56 +66,75 @@ def collect_repo_files_content(
     files: List[Tuple[str, str]],
     ignore_paths: Optional[List[str]] = None,
     debug: bool = False,
+    dry_run: bool = False,  # New parameter
 ) -> str:
     """Collect repository content using Repomix for an AI-friendly format."""
+    temp_dir = None
+
     try:
-        # Create temporary directory to avoid cluttering user's files
-        with tempfile.TemporaryDirectory() as temp_dir:
-            temp_output_path = os.path.join(temp_dir, "repomix-output.txt")
+        # Determine output path based on mode
+        if dry_run:
+            # In dry-run mode, save to current directory
+            output_path = Path.cwd() / "repomix-output.txt"
+            logger.info(f"Dry run: Saving repomix output to {output_path}")
+        else:
+            # In normal mode, create a temporary directory
+            temp_dir = tempfile.mkdtemp()
+            output_path = Path(temp_dir) / "repomix-output.txt"
 
-            cmd = ["repomix", "--compress", f"--output={temp_output_path}"]
+        cmd = ["repomix", "--compress", f"--output={output_path}"]
 
-            # Add ignore patterns if provided
-            if ignore_paths:
-                glob_patterns = [
-                    convert_ignore_path_to_glob(path) for path in ignore_paths
-                ]
-                ignore_arg = ",".join(glob_patterns)
-                cmd.append(f"--ignore={ignore_arg}")
+        # Add ignore patterns if provided
+        if ignore_paths:
+            glob_patterns = [convert_ignore_path_to_glob(path) for path in ignore_paths]
+            ignore_arg = ",".join(glob_patterns)
+            cmd.append(f"--ignore={ignore_arg}")
 
-            # Run repomix from the repository path
-            logger.info("Generating repository content with Repomix...")
-            logger.debug("Command: " + " ".join(cmd))
-            result = subprocess.run(
-                cmd, cwd=str(repo_path), capture_output=True, text=True
-            )
+        # Run repomix from the repository path
+        logger.info("Generating repository content with Repomix...")
+        logger.debug("Command: " + " ".join(cmd))
+        result = subprocess.run(cmd, cwd=str(repo_path), capture_output=True, text=True)
 
-            if result.returncode != 0:
-                logger.error(f"Repomix failed with error: {result.stderr}")
-                logger.info("Falling back to original content collection method")
-                content = collect_files_content_manual(files)
-                if debug:
-                    _save_debug_file(repo_path, "codegrep-manual-content.txt", content)
-                return content
-            # Read the generated output
-            with open(temp_output_path, "r", encoding="utf-8") as f:
-                repo_content = f.read()
-
-            # Save debug file if debug mode is enabled
+        if result.returncode != 0:
+            logger.error(f"Repomix failed with error: {result.stderr}")
+            logger.info("Falling back to original content collection method")
+            content = collect_files_content_manual(files)
             if debug:
-                _save_debug_file(repo_path, "codegrep-repomix-output.txt", repo_content)
+                _save_debug_file(repo_path, "codegrep-manual-content.txt", content)
+            return content
 
-            logger.debug("Successfully generated repository content with Repomix")
-            return repo_content
+        # Read the generated output
+        with open(output_path, "r", encoding="utf-8") as f:
+            repo_content = f.read()
+
+        # Save debug file if debug mode is enabled
+        if debug:
+            _save_debug_file(repo_path, "codegrep-repomix-output.txt", repo_content)
+
+        logger.debug("Successfully generated repository content with Repomix")
+
+        if dry_run:
+            logger.info(f"Repomix output saved to {output_path}")
+
+        return repo_content
 
     except Exception as e:
-        raise e
-        # logger.error(f"Error using Repomix: {e}")
-        # logger.info("Falling back to original content collection method")
-        # content = collect_files_content_manual(files)
-        # if debug:
-        #     _save_debug_file(repo_path, "codegrep-manual-content.txt", content)
-        # return content
+        logger.error(f"Error using Repomix: {e}")
+        logger.info("Falling back to original content collection method")
+        content = collect_files_content_manual(files)
+        if debug:
+            _save_debug_file(repo_path, "codegrep-manual-content.txt", content)
+        return content
+
+    finally:
+        # Clean up temporary directory if it was created and not in dry run mode
+        if temp_dir and not dry_run:
+            import shutil
+
+            try:
+                shutil.rmtree(temp_dir)
+            except Exception as e:
+                logger.warning(f"Failed to clean up temporary directory: {e}")
 
 
 def collect_files_content_manual(files: List[Tuple[str, str]]) -> str:

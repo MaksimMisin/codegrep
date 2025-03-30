@@ -9,7 +9,7 @@ import fnmatch
 from codegrep.index import FAISSIndex
 from codegrep.config import IGNORE_PATHS, IGNORE_EXTENSIONS
 from codegrep.logging import get_logger
-from codegrep.llm_search import search_with_llm
+from codegrep.llm_search import collect_repo_files_content, search_with_llm
 
 logger = get_logger()
 
@@ -257,6 +257,114 @@ def update_index(
             )
 
 
+def validate_repository(repo_path: Path) -> bool:
+    """Validate that the path is a git repository."""
+    if not repo_path.is_dir():
+        logger.error(f"Error: {repo_path} is not a valid directory")
+        return False
+
+    # Check if path is a git repository
+    if not run_git_command(repo_path, ["rev-parse", "--git-dir"]):
+        logger.error(f"Error: {repo_path} is not a git repository")
+        return False
+
+    return True
+
+
+def run_llm_dry_mode(args) -> None:
+    """Run in dry-run mode with LLM - creates repomix file without searching."""
+    current_files = collect_repository_files(
+        args.path,
+        custom_ignore_paths=args.ignore_path,
+        dry_run=False,
+    )
+
+    if not current_files:
+        logger.error("No files found for LLM search in dry-run mode")
+        return
+
+    logger.info("Dry run mode with LLM - creating repomix file and exiting")
+    # Generate the repomix file in the current directory
+    collect_repo_files_content(
+        args.path,
+        current_files,
+        ignore_paths=args.ignore_path,
+        debug=args.debug,
+        dry_run=True,
+    )
+
+    logger.info("Repomix file created in the current directory. Exiting.")
+
+
+def run_llm_search(args) -> None:
+    """Run search using LLM-based approach."""
+    current_files = collect_repository_files(
+        args.path,
+        custom_ignore_paths=args.ignore_path,
+        dry_run=False,
+    )
+
+    if not current_files:
+        logger.error("No files found for LLM search")
+        return
+
+    # Perform LLM-based search
+    file_results = search_with_llm(
+        args.path,
+        args.query,
+        args.hits,
+        current_files,
+        ignore_paths=args.ignore_path,
+        debug=args.debug,
+    )
+
+    if args.files_only:
+        # Only print filenames, no other output
+        for filepath in file_results[: args.hits]:
+            print(filepath)
+    else:
+        logger.info(f"\nLLM search results for '{args.query}':")
+        for filepath in file_results[: args.hits]:
+            print(f"{filepath}")
+
+
+def run_faiss_dry_mode(args, faiss_index: FAISSIndex) -> None:
+    """Run in dry-run mode with FAISS - just shows files that would be indexed."""
+    update_index(
+        args.path, faiss_index, custom_ignore_paths=args.ignore_path, dry_run=True
+    )
+
+
+def run_faiss_search(args, faiss_index: FAISSIndex) -> None:
+    """Run search using FAISS embedding-based approach."""
+    # Update the index first (quiet if --files-only is specified)
+    update_index(
+        args.path,
+        faiss_index,
+        custom_ignore_paths=args.ignore_path,
+        dry_run=False,
+        quiet=args.files_only,
+    )
+
+    # Perform the search
+    results = faiss_index.search(args.query, k=args.hits)
+
+    # Display results
+    if args.files_only:
+        # Only print filenames, no other output
+        for result in results:
+            print(result.filepath)
+    else:
+        logger.info(f"\nResults for '{args.query}':")
+        for result in results:
+            relevance_score = result.relevance
+            path = result.filepath
+            content_preview = result.content.replace("\n", " ")[:60]
+            if len(result.content) > 60:
+                content_preview += "..."
+            print(f"{path} ({relevance_score:.2f}): {content_preview}")
+
+
 def main() -> None:
     """Main entry point for the codegrep CLI."""
     parser = argparse.ArgumentParser(
@@ -330,96 +438,30 @@ def main() -> None:
     elif args.quiet:
         logging.getLogger().setLevel(logging.WARNING)
 
-    if not args.path.is_dir():
-        logger.error(f"Error: {args.path} is not a valid directory")
+    # Validate repository path
+    if not validate_repository(args.path):
         sys.exit(1)
 
-    # Check if path is a git repository
-    if not run_git_command(args.path, ["rev-parse", "--git-dir"]):
-        logger.error(f"Error: {args.path} is not a git repository")
-        sys.exit(1)
-
-    current_files = None
-    if args.use_llm:
-        current_files = collect_repository_files(
-            args.path,
-            custom_ignore_paths=args.ignore_path,
-            dry_run=False,
-        )
-    else:
-        # Use index_dir if provided, otherwise use repository path
-        index_dir = args.index_dir if args.index_dir else args.path
-        faiss_index = FAISSIndex(index_dir)
-
-        # Update the index only for embedding-based search
-        update_index(
-            args.path,
-            faiss_index,
-            custom_ignore_paths=args.ignore_path,
-            dry_run=args.dry_run,
-            quiet=args.files_only,
-        )
-    if args.use_llm:
-        if not current_files:
-            logger.error("No files found for LLM search")
-            return
-
-        # Perform LLM-based search
-        file_results = search_with_llm(
-            args.path,
-            args.query,
-            args.hits,
-            current_files,
-            ignore_paths=args.ignore_path,
-            debug=args.debug,
-        )
-
-        if args.files_only:
-            # Only print filenames, no other output
-            for filepath in file_results[: args.hits]:
-                print(filepath)
-        else:
-            logger.info(f"\nLLM search results for '{args.query}':")
-            for filepath in file_results[: args.hits]:
-                print(f"{filepath}")
-        return
-
-    if args.dry_run:
-        # Only run the index update in dry-run mode
-        update_index(args.path, faiss_index, dry_run=True)
-        return
-
-    # For search mode, query is required
-    if not args.query:
+    # Check for required arguments based on mode
+    if not args.dry_run and not args.query:
         parser.error(
             "the -q/--query argument is required unless --dry-run is specified"
         )
 
-    # Update the index first (quiet if --files-only is specified)
-    update_index(
-        args.path,
-        faiss_index,
-        custom_ignore_paths=args.ignore_path,
-        dry_run=args.dry_run,
-        quiet=args.files_only,
-    )
-
-    # Perform the search
-    results = faiss_index.search(args.query, k=args.hits)
-
-    if args.files_only:
-        # Only print filenames, no other output
-        for result in results:
-            print(result.filepath)
+    if args.use_llm:
+        if args.dry_run:
+            run_llm_dry_mode(args)
+        else:
+            run_llm_search(args)
     else:
-        logger.info(f"\nResults for '{args.query}':")
-        for result in results:
-            relevance_score = result.relevance
-            path = result.filepath
-            content_preview = result.content.replace("\n", " ")[:60]
-            if len(result.content) > 60:
-                content_preview += "..."
-            print(f"{path} ({relevance_score:.2f}): {content_preview}")
+        # Get the index
+        index_dir = args.index_dir if args.index_dir else args.path
+        faiss_index = FAISSIndex(index_dir)
+
+        if args.dry_run:
+            run_faiss_dry_mode(args, faiss_index)
+        else:
+            run_faiss_search(args, faiss_index)
 
 
 if __name__ == "__main__":
