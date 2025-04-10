@@ -1,7 +1,6 @@
 import subprocess
 import requests
 import tempfile
-import os
 from typing import List, Optional, Tuple, cast
 from pathlib import Path
 from json_repair import loads as repair_json
@@ -15,6 +14,77 @@ from codegrep.config import (
 from codegrep.logging import get_logger
 
 logger = get_logger()
+
+
+def validate_file_paths(
+    repo_path: Path, file_paths: List[str]
+) -> Tuple[List[str], List[str]]:
+    """
+    Validate if the file paths returned by LLM exist in the repository.
+
+    Args:
+        repo_path: Repository root path
+        file_paths: List of file paths to validate
+
+    Returns:
+        Tuple containing (valid_paths, invalid_paths)
+    """
+    valid_paths = []
+    invalid_paths = []
+
+    for path in file_paths:
+        full_path = repo_path / path
+        if full_path.is_file():
+            valid_paths.append(path)
+        else:
+            invalid_paths.append(path)
+            logger.warning(f"LLM suggested nonexistent file: {path}")
+
+    return valid_paths, invalid_paths
+
+
+def create_retry_prompt(
+    repo_content: str,
+    query: str,
+    n_files: int,
+    valid_paths: List[str],
+    invalid_paths: List[str],
+    all_valid_files: List[str],
+) -> str:
+    """Create a prompt for the LLM to retry with corrected file paths."""
+    # Sample of valid files to help the LLM
+    sample_paths = (
+        all_valid_files[:25000] if len(all_valid_files) > 25000 else all_valid_files
+    )
+
+    return f"""{repo_content}
+
+CORRECTION NEEDED: Your previous file path suggestions contained errors.
+
+Original query: "{query}"
+
+Valid paths you suggested:
+{', '.join(valid_paths) if valid_paths else 'None'}
+
+Invalid paths you suggested (these files DO NOT EXIST):
+{', '.join(invalid_paths)}
+
+Here are valid file paths in this repository:
+{', '.join(sample_paths)}
+
+Please provide a CORRECTED list of files that users need to read to resolve: "{query}".
+
+List in order of importance, starting from the MOST important file.
+Do not forget important dependencies.
+IMPORTANT: ONLY include files that actually exist in the repository.
+
+Your output should be a json object with the following structure:
+{{
+  "reasoning": "think through the user's request and how each file might be related to it",
+  "files": ["MOST-CRITICAL-file-path1", "2nd-most-critical-file-path2", ...]
+}}
+Make sure to include at least {n_files} files if possible, but ONLY include files that actually exist.
+"""
 
 
 def _save_debug_file(repo_path: Path, filename: str, content: str) -> None:
@@ -270,19 +340,23 @@ def search_with_openai(
         return None
 
 
-def search_with_llm(
+def search_with_llm_and_validate(
     repo_path: Path,
     query: str,
     n_files: int,
     files: List[Tuple[str, str]],
     ignore_paths: Optional[List[str]] = None,
     debug: bool = False,
+    max_retries: int = 5,
 ) -> List[str]:
-    """Search for relevant files using LLM APIs with Gemini as primary and OpenAI as backup."""
+    """Search for relevant files using LLM APIs with validation and retry mechanism."""
     # Collect repository content
     repo_content = collect_repo_files_content(repo_path, files, ignore_paths, debug)
 
-    # Try Gemini first
+    # Get all valid file paths in the repo for validation feedback
+    all_valid_files = [rel_path for _, rel_path in files]
+
+    # Initial search with LLM
     results = search_with_gemini(repo_content, query, n_files, repo_path, debug)
 
     # Fall back to OpenAI if Gemini fails
@@ -290,9 +364,73 @@ def search_with_llm(
         logger.info("Falling back to OpenAI for LLM search")
         results = search_with_openai(repo_content, query, n_files, repo_path, debug)
 
-    # If both APIs fail, return an empty list
+    # If both APIs fail, return empty list
     if results is None:
         logger.error("LLM search failed with both Gemini and OpenAI")
         return []
 
-    return results
+    # Validate the returned paths
+    valid_paths, invalid_paths = validate_file_paths(repo_path, results)
+
+    if not invalid_paths:
+        logger.info("All file paths returned by LLM are valid")
+        return valid_paths
+
+    # Retry loop if there are invalid paths
+    retries = 0
+    while invalid_paths and retries < max_retries:
+        retries += 1
+        logger.info(
+            f"Retry #{retries}: Found {len(invalid_paths)} invalid paths. Asking LLM to fix."
+        )
+
+        # Create a retry prompt
+        retry_prompt = create_retry_prompt(
+            repo_content, query, n_files, valid_paths, invalid_paths, all_valid_files
+        )
+
+        # Try with Gemini first
+        retry_results = search_with_gemini(retry_prompt, n_files, repo_path, debug)
+
+        # Fall back to OpenAI if Gemini fails
+        if retry_results is None:
+            logger.info(f"Retry #{retries}: Falling back to OpenAI")
+            retry_results = search_with_openai(retry_prompt, n_files, repo_path, debug)
+
+        # If both APIs fail, break and return what we have
+        if retry_results is None:
+            logger.error(f"LLM retry #{retries} failed with both APIs")
+            break
+
+        # Save debug info if enabled
+        if debug and repo_path:
+            _save_debug_file(
+                repo_path, f"codegrep-retry-{retries}-results.json", str(retry_results)
+            )
+
+        # Validate the new results
+        new_valid_paths, new_invalid_paths = validate_file_paths(
+            repo_path, retry_results
+        )
+
+        # Update our lists
+        valid_paths = list(set(valid_paths + new_valid_paths))
+        invalid_paths = new_invalid_paths
+
+        # If no improvement after retry, break to avoid wasting API calls
+        if not new_valid_paths:
+            logger.warning(
+                f"Retry #{retries} produced no valid paths. Using previous results."
+            )
+            break
+
+        logger.info(
+            f"Retry #{retries}: Now have {len(valid_paths)} valid paths and {len(invalid_paths)} invalid paths"
+        )
+
+    if retries >= max_retries and invalid_paths:
+        logger.warning(
+            f"Reached maximum retries ({max_retries}). Returning {len(valid_paths)} valid paths found."
+        )
+
+    return valid_paths

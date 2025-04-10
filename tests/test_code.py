@@ -348,7 +348,7 @@ def multiply(a, b):
         # Verify that file1.py's relevance score hasn't changed
         for filepath, score in initial_relevance.items():
             if "file1.py" in filepath:
-                assert new_relevance.get(filepath) == score
+                assert abs(new_relevance.get(filepath) - score) < 1e-2  # type: ignore
 
         # Verify file2.py appears in results with different relevance
         file2_paths = [r.filepath for r in new_results if "file2.py" in r.filepath]

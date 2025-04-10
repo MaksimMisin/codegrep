@@ -9,7 +9,10 @@ import fnmatch
 from codegrep.index import FAISSIndex
 from codegrep.config import IGNORE_PATHS, IGNORE_EXTENSIONS
 from codegrep.logging import get_logger
-from codegrep.llm_search import collect_repo_files_content, search_with_llm
+from codegrep.llm_search import (
+    collect_repo_files_content,
+    search_with_llm_and_validate,
+)
 
 logger = get_logger()
 
@@ -297,7 +300,7 @@ def run_llm_dry_mode(args) -> None:
 
 
 def run_llm_search(args) -> None:
-    """Run search using LLM-based approach."""
+    """Run search using LLM-based approach with path validation."""
     current_files = collect_repository_files(
         args.path,
         custom_ignore_paths=args.ignore_path,
@@ -308,14 +311,15 @@ def run_llm_search(args) -> None:
         logger.error("No files found for LLM search")
         return
 
-    # Perform LLM-based search
-    file_results = search_with_llm(
+    # Perform LLM-based search with validation and retry mechanism
+    file_results = search_with_llm_and_validate(
         args.path,
         args.query,
         args.hits,
         current_files,
         ignore_paths=args.ignore_path,
         debug=args.debug,
+        max_retries=5,
     )
 
     if args.files_only:
