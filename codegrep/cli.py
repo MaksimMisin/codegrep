@@ -372,7 +372,7 @@ def run_faiss_search(args, faiss_index: FAISSIndex) -> None:
 def main() -> None:
     """Main entry point for the codegrep CLI."""
     parser = argparse.ArgumentParser(
-        description="codegrep - Semantic code search tool",
+        description="codegrep - code search tool",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 
@@ -417,9 +417,9 @@ def main() -> None:
         help="Ignore files/directories containing this path (can be specified multiple times)",
     )
     search_group.add_argument(
-        "--use-llm",
+        "--embeddings",
         action="store_true",
-        help="Use LLM instead of embeddings for search (requires GEMINI_API_KEY or OPENAI_API_KEY)",
+        help="Use embeddings for search instead of an LLM",
     )
 
     parser.add_argument(
@@ -452,7 +452,7 @@ def main() -> None:
             "the -q/--query argument is required unless --dry-run is specified"
         )
 
-    if args.use_llm:
+    if not args.embeddings:
         if args.dry_run:
             run_llm_dry_mode(args)
         else:
